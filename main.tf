@@ -18,6 +18,14 @@ provider "aws" {
 # DATA SOURCES
 #######################################################################################
 
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnet_ids" "all" {
+  vpc_id = data.aws_vpc.default.id
+}
+
 data "aws_ami" "ubuntu" {
   most_recent = true
 
@@ -33,24 +41,37 @@ data "aws_ami" "ubuntu" {
 
   owners = ["099720109477"] # Canonical
 }
+
+#######################################################################################
+# MODULES
+#######################################################################################
+
+module "dev_ssh_sg" {
+  source = "terraform-aws-modules/security-group/aws"
+
+  name        = "ubuntu-sg"
+  description = "Security group for ubuntu VM"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress_cidr_blocks = ["205.175.212.203/32"]
+  ingress_rules       = ["ssh-tcp"]
+}
+
+module "ec2_sg" {
+  source = "terraform-aws-modules/security-group/aws"
+
+  name        = "ubuntu-sg"
+  description = "Security group for ubuntu VM"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress_cidr_blocks = ["0.0.0.0/0"]
+  ingress_rules       = ["http-80-tcp", "https-443-tcp", "all-icmp"]
+  egress_rules        = ["all-all"]
+}
+
 #######################################################################################
 # RESOURCES
 #######################################################################################
-#create vpc
-resource "aws_vpc" "project" {
-    cidr_block = "10.0.0.0/16"
-    tags = {
-        Name = "dev"
-    }
-}
-resource "aws_instance" "my-first" {
-    ami = data.aws_ami.ubuntu.id
-    instance_type = "t2.micro"
-
-    tags = {
-        Name = "ubuntu"
-    }
-}
 
 # We need a repo to store containers, the plan is our server only runs containers. So we build these containers in CI, push to the repo and have our EC2 only run containers.
 resource "aws_ecr_repository" "docker_repo" {
@@ -89,45 +110,70 @@ resource "aws_iam_role" "ubuntu_role" {
   }
 }
 
-# resource "aws_security_group" "allow_web" {
-#     name = "allow_web_traffic"
-#     description = "Allow Web inbound traffic"
-#     vpc_id = aws_vpc.project.id
+resource "aws_iam_instance_profile" "ubuntu_profile" {
+  name = "ubuntu_profile"
+  role = aws_iam_role.ubuntu_role.name
+}
 
-#     ingress {
-#         description = "HTTPS"
-#         from_port = 443
-#         to_port = 443
-#         protocol = "tcp"
-#         cidr_blocks = ["0.0.0.0/0"]
-#     }
+resource "aws_iam_role_policy" "ubuntu_policy" {
+  name = "ubuntu_policy"
+  role = aws_iam_role.ubuntu_role.id
 
-#     ingress {
-#         description = "HTTP"
-#         from_port = 80
-#         to_port = 80
-#         protocol = "tcp"
-#         cidr_blocks = ["0.0.0.0/0"]
-#     }
+  # Terraform's "jsonencode" function converts a
+  # Terraform expression result to valid JSON syntax.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      },
+    ]
+  })
+}
 
-#     ingress {
-#             description = "SSH"
-#             from_port = 22
-#             to_port = 22
-#             protocol = "tcp"
-#             cidr_blocks = ["0.0.0.0/0"]
-#     }
+resource "aws_instance" "ubuntu" {
+    ami = data.aws_ami.ubuntu.id
+    instance_type = "t2.micro"
 
+    root_block_device {
+    volume_size = 8
+  }
 
-#     egress {
-#         from_port = 0
-#         to_port = 0
-#         protocol = "-1"
-#         #-1 means any protocol
-#         cidr_blocks = ["0.0.0.0/0"]
-#     }
+  user_data = <<-EOF
+    #!/bin/bash
+    set -ex
+    sudo yum update -y
+    sudo amazon-linux-extras install docker -y
+    sudo service docker start
+    sudo usermod -a -G docker ec2-user
+    sudo curl -L https://github.com/docker/compose/releases/download/1.25.4/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
+    sudo chmod +x /usr/local/bin/docker-compose
+    sudo docker run -d -p 8080:80
+  EOF
 
-#     tags = {
-#         Name = "allow_web"
-#     }
-# }
+    vpc_security_group_ids = [
+    "module.ec2_sg",
+    "module.dev_ssh_sg"
+  ]
+
+    iam_instance_profile = aws_iam_instance_profile.ubuntu_profile.name
+
+    tags = {
+        Name = "ubuntu"
+    }
+
+    monitoring              = true
+    disable_api_termination = false
+    ebs_optimized           = true
+}
+
+#######################################################################################
+# OUTPUTS
+#######################################################################################
+
