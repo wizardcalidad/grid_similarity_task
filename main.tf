@@ -6,6 +6,17 @@ variable "region" {
     default = "us-east-1"
 }
 
+
+variable "vpc_cidr_range" {
+    type = string
+    default = "10.0.0.0/16"
+}
+
+variable "az" {
+  type    = list
+  default = ["eu-west-2a", "eu-west-2b", "eu-west-2c"]
+}
+
 #######################################################################################
 # PROVIDER
 #######################################################################################
@@ -17,14 +28,6 @@ provider "aws" {
 #######################################################################################
 # DATA SOURCES
 #######################################################################################
-
-data "aws_vpc" "default" {
-  cidr_block = "10.0.0.0/16"
-}
-
-data "aws_subnet_ids" "all" {
-  vpc_id = data.aws_vpc.default.id
-}
 
 data "aws_ami" "ubuntu" {
   most_recent = true
@@ -46,28 +49,91 @@ data "aws_ami" "ubuntu" {
 #######################################################################################
 # RESOURCES
 #######################################################################################
+resource "aws_vpc" "main" {
+  cidr_block       = "172.16.0.0/16"
+  instance_tenancy = "default"
+  enable_dns_support = true
+  enable_dns_hostnames = true
 
-resource "aws_security_group" "ubuntu-sg" {
-  name        = "ubuntu-sg"
+  tags = {
+    Name = "main"
+  }
+}
+
+resource "aws_internet_gateway" "gw" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "main"
+  }
+}
+
+resource "aws_subnet" "main" {
+  count = 3
+  vpc_id     = aws_vpc.main.id
+  cidr_block = "172.16.${count.index}.0/24"
+  availability_zone = var.az[count.index]
+  tags = {
+    Name = "Main"
+  }
+}
+resource "aws_subnet" "private" {
+  count = 3
+  vpc_id     = aws_vpc.main.id
+  cidr_block = "172.16.1${count.index}.0/24"
+  availability_zone = var.az[count.index]
+  tags = {
+    Name = "Main"
+  }
+}
+
+resource "aws_route_table" "rt" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.gw.id
+  }
+
+  tags = {
+    Name = "main"
+  }
+}
+
+resource "aws_route" "r" {
+  route_table_id            = aws_route_table.rt.id
+  destination_cidr_block    = "0.0.0.0/0"
+  gateway_id = aws_internet_gateway.gw.id
+  depends_on                = [aws_route_table.rt]
+}
+
+resource "aws_route_table_association" "a" {
+  count = 3
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.rt.id
+}
+
+resource "aws_security_group" "allow_tls" {
+  name        = "allow_tls"
   description = "Allow TLS inbound traffic"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = aws_vpc.main.id
 
   ingress {
-    description      = "TLS from VPC"
-    from_port        = 443
-    to_port          = 443
-    protocol         = "tcp"
-    cidr_blocks      = [data.aws_vpc.default.cidr_block]
-    ipv6_cidr_blocks = [data.aws_vpc.default.ipv6_cidr_block]
+    description      = "Ingress from VPC"
+    protocol    = "tcp"
+    from_port   = 80
+    to_port     = 3001
+    cidr_blocks = [ "0.0.0.0/0" ]
   }
 
   egress {
+    description      = "Egress from VPC"
     from_port        = 0
     to_port          = 0
     protocol         = "-1"
     cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
   }
+
 
   tags = {
     Name = "ubuntu-sg"
@@ -158,7 +224,7 @@ resource "aws_instance" "ubuntu" {
   EOF
 
     vpc_security_group_ids = [
-   aws_security_group.ubuntu-sg.id
+   aws_security_group.allow_tls.id
   ]
 
     iam_instance_profile = aws_iam_instance_profile.ubuntu_profile.name
