@@ -6,6 +6,12 @@ variable "region" {
     default = "us-east-1"
 }
 
+
+variable "vpc_cidr_range" {
+    type = string
+    default = "10.0.0.0/16"
+}
+
 #######################################################################################
 # PROVIDER
 #######################################################################################
@@ -17,14 +23,6 @@ provider "aws" {
 #######################################################################################
 # DATA SOURCES
 #######################################################################################
-
-data "aws_vpc" "default" {
-  cidr_block = "10.0.0.0/16"
-}
-
-data "aws_subnet_ids" "all" {
-  vpc_id = data.aws_vpc.default.id
-}
 
 data "aws_ami" "ubuntu" {
   most_recent = true
@@ -46,19 +44,27 @@ data "aws_ami" "ubuntu" {
 #######################################################################################
 # RESOURCES
 #######################################################################################
+resource "aws_vpc" "main" {
+    cidr_block = "10.0.0.0/16"
+    instance_tenancy = "default"
+    
+  tags = {
+    Name = "ubuntu-vpc"
+  }
+}
 
-resource "aws_security_group" "ubuntu-sg" {
-  name        = "ubuntu-sg"
+resource "aws_security_group" "allow_tls" {
+  name        = "allow_tls"
   description = "Allow TLS inbound traffic"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = aws_vpc.main.id
 
   ingress {
     description      = "TLS from VPC"
     from_port        = 443
     to_port          = 443
     protocol         = "tcp"
-    cidr_blocks      = [data.aws_vpc.default.cidr_block]
-    ipv6_cidr_blocks = [data.aws_vpc.default.ipv6_cidr_block]
+    cidr_blocks      = [aws_vpc.main.cidr_block]
+    ipv6_cidr_blocks = [aws_vpc.main.ipv6_cidr_block]
   }
 
   egress {
@@ -158,7 +164,7 @@ resource "aws_instance" "ubuntu" {
   EOF
 
     vpc_security_group_ids = [
-   aws_security_group.ubuntu-sg.id
+   aws_security_group.allow_tls.id
   ]
 
     iam_instance_profile = aws_iam_instance_profile.ubuntu_profile.name
