@@ -19,7 +19,7 @@ provider "aws" {
 #######################################################################################
 
 data "aws_vpc" "default" {
-  default = true
+  cidr_block = "10.0.0.0/16"
 }
 
 data "aws_subnet_ids" "all" {
@@ -42,36 +42,37 @@ data "aws_ami" "ubuntu" {
   owners = ["099720109477"] # Canonical
 }
 
-#######################################################################################
-# MODULES
-#######################################################################################
-
-module "dev_ssh_sg" {
-  source = "terraform-aws-modules/security-group/aws"
-
-  name        = "ubuntu-sg"
-  description = "Security group for ubuntu VM"
-  vpc_id      = data.aws_vpc.default.id
-
-  ingress_cidr_blocks = ["205.175.212.203/32"]
-  ingress_rules       = ["ssh-tcp"]
-}
-
-module "ec2_sg" {
-  source = "terraform-aws-modules/security-group/aws"
-
-  name        = "ubuntu-sg"
-  description = "Security group for ubuntu VM"
-  vpc_id      = data.aws_vpc.default.id
-
-  ingress_cidr_blocks = ["0.0.0.0/0"]
-  ingress_rules       = ["http-80-tcp", "https-443-tcp", "all-icmp"]
-  egress_rules        = ["all-all"]
-}
 
 #######################################################################################
 # RESOURCES
 #######################################################################################
+
+resource "aws_security_group" "ubuntu-sg" {
+  name        = "ubuntu-sg"
+  description = "Allow TLS inbound traffic"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    description      = "TLS from VPC"
+    from_port        = 443
+    to_port          = 443
+    protocol         = "tcp"
+    cidr_blocks      = [data.aws_vpc.default.cidr_block]
+    ipv6_cidr_blocks = [data.aws_vpc.default.ipv6_cidr_block]
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "ubuntu-sg"
+  }
+}
 
 # We need a repo to store containers, the plan is our server only runs containers. So we build these containers in CI, push to the repo and have our EC2 only run containers.
 resource "aws_ecr_repository" "docker_repo" {
@@ -154,12 +155,10 @@ resource "aws_instance" "ubuntu" {
     sudo usermod -a -G docker ec2-user
     sudo curl -L https://github.com/docker/compose/releases/download/1.25.4/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
     sudo chmod +x /usr/local/bin/docker-compose
-    sudo docker run -d -p 8080:80
   EOF
 
     vpc_security_group_ids = [
-    "module.ec2_sg",
-    "module.dev_ssh_sg"
+   aws_security_group.ubuntu-sg.id
   ]
 
     iam_instance_profile = aws_iam_instance_profile.ubuntu_profile.name
